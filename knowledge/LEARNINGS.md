@@ -200,3 +200,39 @@
   - Deploy: `gh repo create <user>/<repo> --public --source . --push`, then `printf '{"source":{"branch":"main","path":"/"}}' | gh api -X POST repos/<user>/<repo>/pages --input -`.
 - Verify: `gh repo view <repo> --json isPrivate`; build status `gh api repos/<user>/<repo>/pages/builds/latest`; live URL returns HTTP 200 for every asset.
 - Reuse: Every free static project + agent-brain backup.
+
+## L-017 — Build a native Android APK on Termux without Gradle
+
+- Date: 2026-10-27
+- Tags: android, apk, termux, aapt2, d8, javac, no-gradle
+- Problem: Need a real native APK on Termux, but no Android SDK manager, Gradle, or build-tools.
+- Cause: Termux has `aapt2`/`apksigner`/`javac` but no `android.jar`, `d8`, or platform.
+- Fix:
+  1. `android.jar` API 34 from `Sable/android-platforms`; `r8.jar` from Google Maven (`com/android/tools/r8/9.5.28`).
+  2. `aapt2 compile --dir res -o res.zip` → `aapt2 link -I android.jar --manifest ... -R res.zip --java gen`.
+  3. `javac -source 8 -target 8 -bootclasspath android.jar -d classes @sources`.
+  4. `java -cp r8.jar com.android.tools.r8.D8 --release --lib android.jar --min-api 21 --output dex @classes`.
+  5. Append `classes.dex` to the APK with Python `zipfile` in append mode.
+  6. `apksigner sign` + `verify` (v1/v2/v3).
+- Verify: `aapt2 dump badging`, `jadx` decompile, `apksigner verify --verbose`.
+- Reuse: Any native Android build without Android Studio.
+
+## L-018 — resources.arsc must be stored and 4-byte aligned (Android 11+)
+
+- Date: 2026-10-27
+- Tags: android, apk, zipalign, resources.arsc, termux
+- Problem: APK built on Termux had `resources.arsc` at an unaligned offset; Android 11+ may reject installs for targetSdk 30+.
+- Cause: `zipalign` is not available in Termux, and `aapt2 link` output happened to place the file at an odd offset.
+- Fix: Python rebuilds the zip and inserts a `0xD935` alignment extra field (4–7 bytes) before every stored entry so data offsets are 4-byte aligned; keep `resources.arsc` uncompressed. Align **before** signing; apksigner preserves local entry offsets. Verify data offsets with `header_offset + 30 + name_len + extra_len`.
+- Verify: all stored entries print `align4=True`; `resources.arsc` method=stored.
+- Reuse: Every APK built without zipalign.
+
+## L-019 — GitHub release asset 404: use `?download=1`; `file#label` may not rename
+
+- Date: 2026-10-27
+- Tags: github, release, gh, apk, download
+- Problem: Public release asset URL returned HTTP 404 (9-byte "Not Found") with plain curl, though `gh api` showed state=uploaded and size correct.
+- Cause: GitHub edge behavior/user-agent dependent; the release page link works in a browser, and `?download=1` reliably returns 302 → CDN.
+- Fix: Use `.../releases/download/<tag>/<asset>?download=1` for scripts/README. Also: `gh release create tag file#new-name` did **not** rename the asset in this gh version — copy the file to the desired name and `gh release upload` it, then delete the old asset.
+- Verify: `curl -L` the `?download=1` URL, compare SHA-256, run `apksigner verify` on the downloaded APK.
+- Reuse: Any GitHub release binary download.
