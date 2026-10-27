@@ -1,0 +1,101 @@
+#!/data/data/com.termux/files/usr/bin/python
+"""Show current OpenCode context usage vs the model limit.
+
+Usage:
+  token-usage
+  token-usage --json
+
+Exit codes:
+  0 = under 80%
+  2 = 80% or more (compaction/model/port needed)
+"""
+import json
+import subprocess
+import sys
+
+WARN_PERCENT = 80.0
+
+
+def run(cmd):
+    return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+
+
+def api_get(path, params=None):
+    cmd = ["opencode", "api", "get", path]
+    if params:
+        for key, value in params.items():
+            cmd += ["--param", f"{key}={value}"]
+    return json.loads(run(cmd))
+
+
+def main():
+    as_json = "--json" in sys.argv
+
+    sessions = json.loads(
+        run(["opencode", "session", "list", "--max-count", "1", "--format", "json"])
+    )
+    if not sessions:
+        print("No session found")
+        return 1
+
+    session_id = sessions[0]["id"]
+    messages = api_get(f"/api/session/{session_id}/message", {"limit": 20}).get(
+        "data", []
+    )
+
+    used = 0
+    model = None
+    for message in messages:
+        tokens = message.get("tokens")
+        if message.get("type") == "assistant" and tokens:
+            cache = tokens.get("cache") or {}
+            used = (
+                int(tokens.get("input", 0))
+                + int(tokens.get("output", 0))
+                + int(tokens.get("reasoning", 0))
+                + int(cache.get("read", 0))
+            )
+            model = message.get("model") or {}
+            break
+
+    if not model:
+        model = {"providerID": "opencode", "id": "deepseek-v4.1-flash-free"}
+
+    limit = 200000
+    try:
+        for item in api_get("/api/model").get("data", []):
+            same_provider = item.get("providerID") == model.get("providerID")
+            same_model = model.get("id") in (item.get("modelID"), item.get("id"))
+            if same_provider and same_model:
+                limit = int((item.get("limit") or {}).get("context") or limit)
+                break
+    except Exception:
+        pass
+
+    percent = (used / limit * 100) if limit else 0
+    status = "CRITICAL" if percent >= WARN_PERCENT else "OK"
+    result = {
+        "session": session_id,
+        "model": f"{model.get('providerID')}/{model.get('id')}",
+        "used": used,
+        "limit": limit,
+        "percent": round(percent, 1),
+        "status": status,
+    }
+
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Session : {session_id}")
+        print(f"Model   : {result['model']}")
+        print(f"Context : {used:,} / {limit:,} ({percent:.1f}%)")
+        if percent >= WARN_PERCENT:
+            print("Status  : ⚠️  80% CROSSED — user ko batao: compact / model / port")
+        else:
+            print("Status  : ✅ OK")
+
+    return 2 if percent >= WARN_PERCENT else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,27 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# context-reset — compact the current session (session ID stays the same)
+#
+#   context-reset            # dry run: show session + usage
+#   context-reset --apply    # request compaction
+set -euo pipefail
+
+SESSION_ID=$(opencode session list --max-count 1 --format json | python -c \
+  "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')")
+
+if [ -z "$SESSION_ID" ]; then
+  echo "❌ No session found"
+  exit 1
+fi
+
+if [ "${1:-}" != "--apply" ]; then
+  token-usage || true
+  echo
+  echo "Dry run — kuch change nahi hua."
+  echo "Apply with: context-reset --apply"
+  echo "Session same rahega; purani conversation summary se replace hogi."
+  exit 0
+fi
+
+opencode api post "/api/session/$SESSION_ID/compact" --data '{}' >/dev/null
+echo "✅ Compaction requested for $SESSION_ID"
+echo "Session same rahega. 5-10 sec baad check karo: token-usage"

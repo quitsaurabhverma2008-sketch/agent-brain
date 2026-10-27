@@ -1,0 +1,63 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# agent-backup — private GitHub backup of knowledge, skills, scripts
+# Usage: agent-backup ["commit message"]
+set -euo pipefail
+
+DEST="$HOME/agent-brain"
+REPO="quitsaurabhverma2008-sketch/agent-brain"
+MSG="${1:-backup: $(date '+%Y-%m-%d %H:%M')}"
+
+mkdir -p "$DEST"/{knowledge,skills,bin,config}
+
+# --- sync (cp -a, no rsync on Termux) ---
+sync_dir() {
+  local src="$1" dst="$2"
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  cp -a "$src"/. "$dst"/
+}
+
+sync_dir "$HOME/.agents/knowledge" "$DEST/knowledge"
+sync_dir "$HOME/.agents/skills"    "$DEST/skills"
+
+rm -rf "$DEST/bin"; mkdir -p "$DEST/bin"
+for f in token-usage context-reset model-rotate port-rotate agent-backup; do
+  [ -f "$HOME/.local/bin/$f" ] && cp "$HOME/.local/bin/$f" "$DEST/bin/$f"
+done
+chmod +x "$DEST"/bin/* 2>/dev/null || true
+
+cp "$HOME/.config/opencode/models.txt" "$DEST/config/models.txt" 2>/dev/null || true
+cp "$HOME/.config/opencode/ports.txt"  "$DEST/config/ports.txt"  2>/dev/null || true
+cp "$HOME/.config/opencode/AGENTS.md"  "$DEST/AGENTS.md"         2>/dev/null || true
+
+# --- secret scan ---
+PATTERNS='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}'
+HITS=$(grep -rEn "$PATTERNS" "$DEST" --exclude-dir=.git 2>/dev/null || true)
+if [ -n "$HITS" ]; then
+  echo "❌ SECRET DETECTED — push aborted:"
+  echo "$HITS" | sed 's/\(.\{12\}\).*/\1…[REDACTED]/' | head -10
+  exit 1
+fi
+
+cd "$DEST"
+git init -q -b main 2>/dev/null || git init -q
+git branch -M main 2>/dev/null || true
+git add -A
+
+if git diff --cached --quiet; then
+  echo "✅ Kuch naya nahi — already up to date."
+  exit 0
+fi
+
+git -c user.name="Saurabh Verma" -c user.email="quitsaurabhverma2008-sketch@users.noreply.github.com" commit -q -m "$MSG"
+
+# repo create if missing
+if ! gh repo view "$REPO" >/dev/null 2>&1; then
+  gh repo create "$REPO" --private --description "Private backup: agent knowledge, skills & scripts" --source "$DEST" --remote origin --push
+else
+  git remote get-url origin >/dev/null 2>&1 || git remote add origin "https://github.com/$REPO.git"
+  git push -q origin HEAD:main 2>/dev/null || git push -q -u origin HEAD:main
+fi
+
+echo "✅ Backup pushed: https://github.com/$REPO"
+git log -1 --format='   %h %s'

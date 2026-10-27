@@ -1,0 +1,97 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# model-rotate — switch the current session to the next free model
+#
+#   model-rotate            # dry run: show current + next model
+#   model-rotate --apply    # switch model (session stays the same)
+set -euo pipefail
+
+POOL="$HOME/.config/opencode/models.txt"
+INDEX_FILE="$HOME/.config/opencode/model-index"
+mkdir -p "$(dirname "$INDEX_FILE")"
+
+if [ ! -f "$POOL" ]; then
+  echo "❌ Missing model pool: $POOL"
+  exit 1
+fi
+
+mapfile -t MODELS < "$POOL"
+COUNT=${#MODELS[@]}
+if [ "$COUNT" -eq 0 ]; then
+  echo "❌ Model pool is empty"
+  exit 1
+fi
+
+SESSION_ID=$(opencode session list --max-count 1 --format json | python -c \
+  "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')")
+
+if [ -z "$SESSION_ID" ]; then
+  echo "❌ No session found"
+  exit 1
+fi
+
+CURRENT=$(opencode api get "/api/session/$SESSION_ID" | python -c \
+  "import sys,json; m=json.load(sys.stdin)['data'].get('model') or {}; print(f\"{m.get('providerID')}/{m.get('id')}\")" \
+  2>/dev/null || echo "")
+
+CURRENT_INDEX=$(cat "$INDEX_FILE" 2>/dev/null || echo -1)
+START=0
+if [ "$CURRENT_INDEX" -ge 0 ] 2>/dev/null; then
+  START=$(( (CURRENT_INDEX + 1) % COUNT ))
+fi
+
+# If the current model is in the pool, start after it instead.
+for ((i = 0; i < COUNT; i++)); do
+  idx=$(( (START + i) % COUNT ))
+  if [ "opencode/${MODELS[$idx]}" = "$CURRENT" ]; then
+    START=$(( (idx + 1) % COUNT ))
+    break
+  fi
+done
+
+TARGET="${MODELS[$START]}"
+TARGET_ID="${TARGET##*/}"
+
+MODELS_JSON=$(mktemp)
+opencode api get /api/model > "$MODELS_JSON"
+read -r LIMIT VARIANT <<< "$(python - "$MODELS_JSON" "$TARGET_ID" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+target = sys.argv[2]
+for model in data.get('data', []):
+    if model.get('providerID') == 'opencode' and model.get('id') == target:
+        limit = (model.get('limit') or {}).get('context', '?')
+        variants = [v.get('id') for v in (model.get('variants') or [])]
+        variant = ''
+        for candidate in ('max', 'xhigh', 'high', 'medium', 'low'):
+            if candidate in variants:
+                variant = candidate
+                break
+        print(limit, variant)
+        break
+PY
+)"
+rm -f "$MODELS_JSON"
+
+if [ "${1:-}" != "--apply" ]; then
+  echo "Current model : ${CURRENT:-unknown}"
+  echo "Next model    : opencode/$TARGET_ID"
+  echo "Context limit : $LIMIT tokens${VARIANT:+ (variant: $VARIANT)}"
+  echo
+  echo "Dry run — kuch change nahi hua."
+  echo "Apply with: model-rotate --apply"
+  exit 0
+fi
+
+BODY=$(python - "$TARGET_ID" "$VARIANT" <<'PY'
+import json, sys
+model = {"id": sys.argv[1], "providerID": "opencode"}
+if sys.argv[2]:
+    model["variant"] = sys.argv[2]
+print(json.dumps({"model": model}))
+PY
+)
+
+opencode api post "/api/session/$SESSION_ID/model" --data "$BODY" >/dev/null
+echo "$START" > "$INDEX_FILE"
+echo "✅ Model switched → opencode/$TARGET_ID${VARIANT:+ (variant=$VARIANT)}"
+echo "Session same hai; agla reply naye model se aayega."

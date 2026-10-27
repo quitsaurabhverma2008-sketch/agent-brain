@@ -1,0 +1,77 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Rotate the OpenCode server port using the pool in ~/.config/opencode/ports.txt
+#
+#   port-rotate            # dry run: show next free port
+#   port-rotate --apply    # rotate (service restarts; chat may blink 2-5s)
+set -euo pipefail
+
+POOL="$HOME/.config/opencode/ports.txt"
+INDEX_FILE="$HOME/.config/opencode/port-index"
+LOG="$HOME/.local/state/opencode/port-rotate.log"
+mkdir -p "$(dirname "$LOG")" "$(dirname "$INDEX_FILE")"
+
+if [ ! -f "$POOL" ]; then
+  echo "❌ Missing port pool: $POOL"
+  exit 1
+fi
+
+mapfile -t PORTS < "$POOL"
+COUNT=${#PORTS[@]}
+if [ "$COUNT" -eq 0 ]; then
+  echo "❌ Port pool is empty"
+  exit 1
+fi
+
+CURRENT=$(cat "$INDEX_FILE" 2>/dev/null || echo -1)
+START=$(( (CURRENT + 1) % COUNT ))
+
+is_free() {
+  python - "$1" <<'PY'
+import socket, sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+}
+
+FOUND=""
+NEW_INDEX=""
+for ((i = 0; i < COUNT; i++)); do
+  idx=$(( (START + i) % COUNT ))
+  port="${PORTS[$idx]}"
+  if is_free "$port"; then
+    FOUND="$port"
+    NEW_INDEX="$idx"
+    break
+  fi
+done
+
+if [ -z "$FOUND" ]; then
+  echo "❌ No free port left in the pool"
+  exit 1
+fi
+
+if [ "${1:-}" != "--apply" ]; then
+  echo "Next free port : $FOUND (index $NEW_INDEX of $COUNT)"
+  echo "Apply with     : port-rotate --apply"
+  exit 0
+fi
+
+echo "$(date -Iseconds) rotating to $FOUND (index $NEW_INDEX)" >> "$LOG"
+
+# Detach first: `opencode service set port` stops the server that spawned us.
+nohup setsid bash -c "
+  sleep 2
+  opencode service set port $FOUND
+  opencode service start
+  echo $NEW_INDEX > '$INDEX_FILE'
+  echo \"\$(date -Iseconds) now on $FOUND\" >> '$LOG'
+" >> "$LOG" 2>&1 &
+
+echo "🔄 Port rotation scheduled → $FOUND"
+echo "Chat 2-5 seconds ke liye blink kar sakti hai. Reconnect: opencode"
+echo "Naya link: opencode pair"

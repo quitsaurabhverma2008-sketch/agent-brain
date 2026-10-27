@@ -1,0 +1,13 @@
+# Secrets — kabhi commit mat karo
+*.env
+.env*
+opencode.json
+hosts.yml
+*.key
+*.pem
+*.p12
+*.jks
+**/auth.json
+**/credentials.json
+*.log
+.DS_Store
