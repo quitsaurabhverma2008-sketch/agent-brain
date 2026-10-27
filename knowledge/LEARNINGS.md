@@ -168,3 +168,35 @@
 - Fix: `opencode api post /api/session/<id>/model --data '{"model":{"id":"glm-5.3-flash-free","providerID":"opencode","variant":"max"}}'`
 - Verify: The next assistant message shows the new model; `token-usage` uses the new limit.
 - Reuse: Free-model rotation / capacity management.
+
+## L-014 — Node 24: `node --test tests/` fails, use a file glob
+
+- Date: 2026-10-27
+- Tags: node, testing, npm, termux
+- Problem: `node --test tests/` threw `Cannot find module .../tests` on Node v24.18.0.
+- Cause: Newer Node expects file paths/globs, not a bare directory, for the test runner.
+- Fix: `"test": "node --test tests/*.test.js"` in package.json (shell expands the glob).
+- Verify: `npm test` finds and runs all test files.
+- Reuse: Any Node 22+ project using the built-in test runner.
+
+## L-015 — jsdom boot: guard double DOMContentLoaded + cache every element
+
+- Date: 2026-10-27
+- Tags: jsdom, testing, vanilla-js, dom
+- Problem: DOM tests double-added tasks and crashed on `els.ringWrap.setAttribute` (undefined).
+- Cause: (1) jsdom fires its own DOMContentLoaded after the test dispatch, so init ran twice; (2) a referenced element was missing from the cached `els` map.
+- Fix: Add `if (init.started) return; init.started = true;` at the top of init, and keep a single cached-element map; test boot should only dispatch DOMContentLoaded if `window.__kaamUI` is absent.
+- Verify: Add-one-task test yields exactly 1 item; all DOM tests pass.
+- Reuse: Any vanilla JS app tested under jsdom.
+
+## L-016 — Free private backup + GitHub Pages deploy via `gh`
+
+- Date: 2026-10-27
+- Tags: github, gh, backup, pages, deploy
+- Problem: Needed a private backup of agent knowledge/skills and a free live host for the app.
+- Cause: GitHub Pages is free for public repos; private repos need a paid plan for Pages.
+- Fix:
+  - Backup: `agent-backup` copies knowledge/skills/scripts to `~/agent-brain`, scans for secret patterns (aborts on match), commits, creates a **private** repo and pushes.
+  - Deploy: `gh repo create <user>/<repo> --public --source . --push`, then `printf '{"source":{"branch":"main","path":"/"}}' | gh api -X POST repos/<user>/<repo>/pages --input -`.
+- Verify: `gh repo view <repo> --json isPrivate`; build status `gh api repos/<user>/<repo>/pages/builds/latest`; live URL returns HTTP 200 for every asset.
+- Reuse: Every free static project + agent-brain backup.
